@@ -3,6 +3,8 @@ use git_url_parse::GitUrl;
 use octocrab;
 use tokio;
 
+use chrono::Local;
+use chrono_humanize;
 #[macro_use]
 extern crate prettytable;
 use prettytable::{format, Table};
@@ -17,6 +19,7 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     let mut table = Table::new();
+    let now = Local::now();
     table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
 
     cfg.merge(config::File::with_name(matches.value_of("config").unwrap()))
@@ -32,9 +35,20 @@ fn main() {
                         .releases()
                         .get_latest()
                         .await
-                        .unwrap()
-                        .tag_name;
-                    table.add_row(row![t.to_string(), release]);
+                        .unwrap();
+
+                    table.add_row(row![
+                        t.to_string(),
+                        release.tag_name,
+                        chrono_humanize::HumanTime::from(
+                            release
+                                .published_at
+                                .unwrap()
+                                .signed_duration_since(now)
+                                .to_owned()
+                        )
+                        .to_string()
+                    ]);
                 });
             });
         });
