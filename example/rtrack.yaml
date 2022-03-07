@@ -1,3 +1,4 @@
+token: sometoken
 repos:
   - https://github.com/helm/helm
   - https://github.com/grafana/loki

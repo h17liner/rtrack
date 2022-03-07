@@ -3,8 +3,10 @@ use git_url_parse::GitUrl;
 use octocrab;
 use tokio;
 
-use chrono::Local;
-use chrono_humanize;
+use chrono::{Local};
+use chrono_humanize::{HumanTime};
+use colored::*;
+
 #[macro_use]
 extern crate prettytable;
 use prettytable::{format, Table};
@@ -30,24 +32,34 @@ fn main() {
             x.iter().for_each(|t| {
                 rt.block_on(async {
                     let url = GitUrl::parse(&t.to_string()).unwrap();
-                    let release = octocrab::instance()
+                    let token = cfg.get_str("token").unwrap();
+                    let octo = octocrab::Octocrab::builder().personal_token(token).build();
+                    let release = octo.unwrap()
                         .repos(url.owner.unwrap(), url.name.to_string())
                         .releases()
                         .get_latest()
                         .await
                         .unwrap();
 
+                    let output = HumanTime::from(
+                        release
+                            .published_at
+                            .unwrap()
+                            .signed_duration_since(now)
+                            .to_owned()
+                    ).to_string();
+
+                    let text = if output.contains("hour") {
+                        // String::from(format!("{}", output.blue()))
+                        format!("{}", output.blue())
+                    } else {
+                        output
+                    };
+
                     table.add_row(row![
                         t.to_string(),
                         release.tag_name,
-                        chrono_humanize::HumanTime::from(
-                            release
-                                .published_at
-                                .unwrap()
-                                .signed_duration_since(now)
-                                .to_owned()
-                        )
-                        .to_string()
+                        text
                     ]);
                 });
             });
