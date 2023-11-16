@@ -1,69 +1,86 @@
-use clap::{App, Arg};
-use git_url_parse::GitUrl;
-use octocrab;
-use tokio;
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-use chrono::{Local};
-use chrono_humanize::{HumanTime};
+mod settings;
+
+use clap::{crate_version, Arg, ArgAction, Command};
+use git_url_parse::GitUrl;
+use octocrab::Octocrab;
+use chrono::Local;
+use chrono_humanize::HumanTime;
 use colored::*;
+
+use tokio::sync::mpsc;
 
 #[macro_use]
 extern crate prettytable;
 use prettytable::{format, Table};
 
-fn main() {
-    let path = shellexpand::tilde("~/.config/rtrack.yaml");
-    let matches = App::new("rtrack")
-        .arg(Arg::with_name("config").short("c").default_value(&*path))
-        .get_matches();
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let app = Command::new("rtrack")
+        .about("get releases from github")
+        .version(crate_version!())
+        .arg(
+            Arg::new("config")
+                .help("Path to config file")
+                .short('c')
+                .long("config")
+                .action(ArgAction::Set),
+        );
+    let matches: clap::ArgMatches = app.get_matches();
+    let default_config_file = shellexpand::tilde("~/.config/rtrack.yaml");
+    let config_file = matches
+        .get_one::<String>("config")
+        .map(|s| s.as_str())
+        .unwrap_or(
+            &*default_config_file
+        );
+    
+    let config = settings::AppConfig::new(config_file).unwrap();
 
-    let mut cfg = config::Config::default();
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
+    let now = Local::now();    
     let mut table = Table::new();
-    let now = Local::now();
-    table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
+    table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);    
 
-    cfg.merge(config::File::with_name(matches.value_of("config").unwrap()))
-        .unwrap()
-        .get_array("repos")
-        .into_iter()
-        .for_each(|x| {
-            x.iter().for_each(|t| {
-                rt.block_on(async {
-                    let url = GitUrl::parse(&t.to_string()).unwrap();
-                    let token = cfg.get_str("token").unwrap();
-                    let octo = octocrab::Octocrab::builder().personal_token(token).build();
-                    let release = octo.unwrap()
-                        .repos(url.owner.unwrap(), url.name.to_string())
-                        .releases()
-                        .get_latest()
-                        .await
-                        .unwrap();
+    let (tx, mut rx) = mpsc::channel(32);
 
-                    let output = HumanTime::from(
-                        release
-                            .published_at
-                            .unwrap()
-                            .signed_duration_since(now)
-                            .to_owned()
-                    ).to_string();
+    config.repos.into_iter().for_each(|repo|{
+        let url = GitUrl::parse(&repo).unwrap();
+        let octo = Octocrab::builder().personal_token(config.token.clone()).build().unwrap();
 
-                    let text = if output.contains("hour") {
-                        // String::from(format!("{}", output.blue()))
-                        format!("{}", output.blue())
-                    } else {
-                        output
-                    };
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let release = octo
+                .repos(url.owner.unwrap(), url.name.to_string())
+                .releases()
+                .get_latest()
+                .await
+                .unwrap();
 
-                    table.add_row(row![
-                        t.to_string(),
-                        release.tag_name,
-                        text
-                    ]);
-                });
-            });
+            let output = HumanTime::from(
+                    release
+                        .published_at
+                        .unwrap()
+                        .signed_duration_since(now)
+                        .to_owned()
+                ).to_string();
+
+
+            let text = if output.contains("hour") {
+                format!("{}", output.blue())
+            } else {
+                output
+            };
+
+            tx.send(row![repo.to_string(), release.tag_name, text]).await.unwrap();
         });
+    });
+
+    drop(tx);
+    while let Some(row) = rx.recv().await {
+        table.add_row(row);
+    }
 
     table.printstd();
 }
