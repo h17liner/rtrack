@@ -58,29 +58,44 @@ async fn main() {
                 .await
                 .unwrap();
 
-            let output = HumanTime::from(
-                    release
-                        .published_at
-                        .unwrap()
-                        .signed_duration_since(now)
-                        .to_owned()
-                ).to_string();
+            let release_time = release
+                    .published_at
+                    .unwrap()
+                    .signed_duration_since(now)
+                    .to_owned();
 
-
-            let text = if output.contains("hour") {
-                format!("{}", output.blue())
-            } else {
-                output
+            let output = match release_time.num_hours().abs() {
+                0..=24 => {
+                    HumanTime::from(release_time).to_string().green()
+                },
+                25..=48 => {
+                    HumanTime::from(release_time).to_string().blue()
+                },
+                _ => {
+                    HumanTime::from(release_time).to_string().normal()
+                }
+                
             };
-
-            tx.send(row![repo.to_string(), release.tag_name, text]).await.unwrap();
+            
+            tx.send(row![repo.to_string(), release.tag_name, output]).await.unwrap();
         });
     });
 
     drop(tx);
+    let mut rows = Vec::new();
     while let Some(row) = rx.recv().await {
-        table.add_row(row);
+        rows.push(row);
     }
+
+    rows.sort_by(|a, b| {
+        let a = a.get_cell(0).unwrap().to_string();
+        let b = b.get_cell(0).unwrap().to_string();
+        a.cmp(&b)
+    });
+
+    rows.into_iter().into_iter().for_each(|row| {
+        table.add_row(row);
+    });
 
     table.printstd();
 }
